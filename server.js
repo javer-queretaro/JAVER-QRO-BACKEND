@@ -1,8 +1,20 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import crypto from 'node:crypto';
+import { enqueueMetaLead, flushMetaTasks } from './meta-capi.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+let fetchImpl = fetch;
+
+export function setFetchForTests(nextFetch) {
+  fetchImpl = nextFetch;
+}
+
+export { app, flushMetaTasks };
 
 app.use((req, res, next) => {
   const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
@@ -32,6 +44,14 @@ app.get('/', (req, res) => {
 app.options('/enviar', (req, res) => {
   res.sendStatus(200);
 });
+
+function clientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || '';
+}
 
 app.post('/enviar', async (req, res) => {
   try {
@@ -83,7 +103,7 @@ app.post('/enviar', async (req, res) => {
     params.append('secret', secretKey);
     params.append('response', recaptchaToken);
 
-    const recaptchaRes = await fetch('https://www.google.com/recaptcha/api/siteverify', {
+    const recaptchaRes = await fetchImpl('https://www.google.com/recaptcha/api/siteverify', {
       method: 'POST',
       body: params
     });
@@ -106,7 +126,7 @@ app.post('/enviar', async (req, res) => {
       '00N3l00000Q7A5S': body['00N3l00000Q7A5S']
     });
 
-    const salesforceResponse = await fetch(salesforceUrl, {
+    const salesforceResponse = await fetchImpl(salesforceUrl, {
       method: 'POST',
       body: salesforceData,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
@@ -116,13 +136,43 @@ app.post('/enviar', async (req, res) => {
       return res.status(500).json({ error: 'Error al enviar a Salesforce' });
     }
 
-    return res.status(200).json({ message: 'Formulario enviado correctamente' });
+    const eventId = crypto.randomUUID();
+    enqueueMetaLead({
+      eventId,
+      formOrigen: body.form_origen,
+      email: body.email,
+      phone: body.phone,
+      ip: clientIp(req),
+      userAgent: req.get('user-agent') || '',
+      fbp: body.fbp,
+      fbc: body.fbc,
+      eventSourceUrl: body.event_source_url
+    }, fetchImpl);
+
+    return res.status(200).json({
+      message: 'Formulario enviado correctamente',
+      event_id: eventId
+    });
   } catch (error) {
     console.error('Error en /enviar:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend escuchando en http://localhost:${PORT}`);
-});
+export function startServer() {
+  return app.listen(PORT, () => {
+    console.log(`Backend escuchando en http://localhost:${PORT}`);
+  });
+}
+
+function isDirectRun() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const entryUrl = pathToFileURL(path.resolve(entry)).href;
+  const selfUrl = pathToFileURL(fileURLToPath(import.meta.url)).href;
+  return entryUrl === selfUrl;
+}
+
+if (isDirectRun()) {
+  startServer();
+}
