@@ -16,22 +16,39 @@ export function setFetchForTests(nextFetch) {
 
 export { app, flushMetaTasks };
 
-app.use((req, res, next) => {
+const LANDING_ORIGINS = [
+  'https://www.javer-queretaro.com',
+  'https://javer-queretaro.com'
+];
+
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+
   const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
-    .map((item) => item.trim())
+    .map((item) => item.trim().replace(/\/$/, ''))
     .filter(Boolean);
 
+  if (!configuredOrigins.length) return true;
+  return configuredOrigins.includes(origin) || LANDING_ORIGINS.includes(origin);
+}
+
+app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (!configuredOrigins.length) {
-    res.header('Access-Control-Allow-Origin', origin || '*');
-  } else if (origin && configuredOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
+  if (isAllowedOrigin(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Vary', 'Origin');
   }
 
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Content-Security-Policy', "frame-ancestors 'self' https://www.google.com");
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
   next();
 });
 
@@ -39,10 +56,6 @@ app.use(express.json());
 
 app.get('/', (req, res) => {
   res.status(200).send('OK');
-});
-
-app.options('/enviar', (req, res) => {
-  res.sendStatus(200);
 });
 
 function clientIp(req) {

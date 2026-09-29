@@ -357,6 +357,53 @@ test('doble envío', async () => {
   assert.equal(graphPayload(1).data[0].event_id, second.json.event_id);
 });
 
+test('preflight OPTIONS de la landing', async () => {
+  const previousOrigins = process.env.ALLOWED_ORIGINS;
+  process.env.ALLOWED_ORIGINS = 'https://javer-queretaro.com';
+  installFetch();
+
+  try {
+    const response = await fetch(`${baseUrl}/enviar`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://www.javer-queretaro.com',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type'
+      }
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get('access-control-allow-origin'), 'https://www.javer-queretaro.com');
+    assert.match(response.headers.get('access-control-allow-methods'), /POST/);
+    assert.match(response.headers.get('access-control-allow-methods'), /OPTIONS/);
+    assert.match(response.headers.get('access-control-allow-headers'), /Content-Type/i);
+    assert.equal(calls.length, 0);
+
+    const apex = await fetch(`${baseUrl}/enviar`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://javer-queretaro.com',
+        'Access-Control-Request-Method': 'POST'
+      }
+    });
+    assert.equal(apex.status, 204);
+    assert.equal(apex.headers.get('access-control-allow-origin'), 'https://javer-queretaro.com');
+
+    const blocked = await fetch(`${baseUrl}/enviar`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://evil.example',
+        'Access-Control-Request-Method': 'POST'
+      }
+    });
+    assert.equal(blocked.status, 204);
+    assert.equal(blocked.headers.get('access-control-allow-origin'), null);
+  } finally {
+    if (previousOrigins === undefined) delete process.env.ALLOWED_ORIGINS;
+    else process.env.ALLOWED_ORIGINS = previousOrigins;
+  }
+});
+
 test('mismo event_id entre Pixel y CAPI', async () => {
   installFetch();
   const first = await postLead(validBody('lead-form-1'));
