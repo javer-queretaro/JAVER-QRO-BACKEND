@@ -62,10 +62,22 @@ function installFetch({ recaptchaSuccess = true, salesforceOk = true, meta = {} 
         throw new Error('meta down');
       }
       const status = meta.status ?? 200;
+      const body = typeof meta.body === 'string'
+        ? meta.body
+        : status >= 200 && status < 300
+          ? JSON.stringify({ events_received: 1, messages: [], fbtrace_id: 'trace-ok' })
+          : JSON.stringify({
+            error: {
+              message: 'Invalid token test-meta-token for juan.perez@example.com',
+              type: 'OAuthException',
+              code: 190,
+              fbtrace_id: 'trace-err'
+            }
+          });
       return {
         ok: status >= 200 && status < 300,
         status,
-        text: async () => ''
+        text: async () => body
       };
     }
 
@@ -300,7 +312,15 @@ test('error de Conversions API', async () => {
     assert.equal(failedHttp.status, 200);
     assert.equal(failedHttp.json.message, 'Formulario enviado correctamente');
     assert.equal(graphPayload().data[0].event_id, failedHttp.json.event_id);
-    assert.equal(entries.some((entry) => entry[0] === 'Meta CAPI error' && entry[1].status === 500), true);
+    assert.equal(entries.some((entry) => (
+      entry[0] === 'Meta CAPI error' &&
+      entry[1].status === 500 &&
+      entry[1].event_id === failedHttp.json.event_id &&
+      entry[1].error_code === 190 &&
+      entry[1].error_type === 'OAuthException' &&
+      entry[1].fbtrace_id === 'trace-err'
+    )), true);
+    assert.equal(JSON.stringify(entries).includes('Invalid token'), false);
 
     installFetch({ meta: { throw: true } });
     const failedNetwork = await postLead(validBody('lead-form-2'));
@@ -322,6 +342,54 @@ test('error de Conversions API', async () => {
   } finally {
     console.error = originalError;
     process.env.META_ACCESS_TOKEN = 'test-meta-token';
+  }
+});
+
+test('registro de éxito y error de Meta', async () => {
+  const originalLog = console.log;
+  const originalError = console.error;
+  const logs = [];
+  const errors = [];
+  console.log = (...args) => logs.push(args);
+  console.error = (...args) => errors.push(args);
+
+  try {
+    installFetch();
+    const success = await postLead(validBody('lead-form-1'));
+    const successEntry = logs.find((entry) => entry[0] === 'Meta CAPI success');
+    assert.ok(successEntry);
+    assert.equal(successEntry[1].event_id, success.json.event_id);
+    assert.equal(successEntry[1].status, 200);
+    assert.equal(successEntry[1].events_received, 1);
+    assert.equal(successEntry[1].fbtrace_id, 'trace-ok');
+    assert.equal(errors.some((entry) => entry[0] === 'Meta CAPI error'), false);
+
+    installFetch({
+      meta: {
+        status: 400,
+        body: JSON.stringify({
+          error: {
+            message: 'access token test-meta-token email juan.perez@example.com phone 4421234567',
+            type: 'OAuthException',
+            code: 190,
+            fbtrace_id: 'trace-bad'
+          }
+        })
+      }
+    });
+    const failed = await postLead(validBody('lead-form-2'));
+    const errorEntry = errors.find((entry) => entry[0] === 'Meta CAPI error' && entry[1].status === 400);
+    assert.equal(failed.status, 200);
+    assert.ok(errorEntry);
+    assert.equal(errorEntry[1].event_id, failed.json.event_id);
+    assert.equal(errorEntry[1].error_code, 190);
+    assert.equal(errorEntry[1].fbtrace_id, 'trace-bad');
+    assert.equal(logs.filter((entry) => entry[0] === 'Meta CAPI success' && entry[1].event_id === failed.json.event_id).length, 0);
+
+    assertNoSensitiveLogs([...logs, ...errors]);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
   }
 });
 

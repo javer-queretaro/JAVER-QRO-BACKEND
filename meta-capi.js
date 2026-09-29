@@ -58,6 +58,36 @@ function logMeta(message, details) {
   console.error(message, details);
 }
 
+function readSafeId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) return null;
+  return value;
+}
+
+function safeMetaResult(parsed) {
+  if (!parsed || typeof parsed !== 'object') {
+    return { events_received: null, fbtrace_id: null, error_code: null, error_type: null };
+  }
+
+  const error = parsed.error && typeof parsed.error === 'object' ? parsed.error : null;
+  return {
+    events_received: Number.isFinite(parsed.events_received) ? parsed.events_received : null,
+    fbtrace_id: readSafeId(parsed.fbtrace_id) || readSafeId(error?.fbtrace_id),
+    error_code: error && Number.isFinite(error.code) ? error.code : null,
+    error_type: readSafeId(error?.type)
+  };
+}
+
+async function readMetaResult(response) {
+  if (typeof response.text !== 'function') return safeMetaResult(null);
+  const raw = await response.text().catch(() => '');
+  if (!raw) return safeMetaResult(null);
+  try {
+    return safeMetaResult(JSON.parse(raw));
+  } catch {
+    return safeMetaResult(null);
+  }
+}
+
 export async function sendMetaLeadEvent(input, fetchImpl) {
   const eventId = input.eventId;
   const pixelId = (process.env.META_PIXEL_ID || '').trim();
@@ -113,15 +143,24 @@ export async function sendMetaLeadEvent(input, fetchImpl) {
       body: JSON.stringify(body)
     });
 
-    if (typeof response.text === 'function') {
-      await response.text().catch(() => {});
-    }
+    const result = await readMetaResult(response);
+    const summary = {
+      event_id: eventId,
+      status: response.status,
+      events_received: result.events_received,
+      fbtrace_id: result.fbtrace_id
+    };
 
-    if (!response.ok) {
-      logMeta('Meta CAPI error', { event_id: eventId, status: response.status });
+    if (!response.ok || result.events_received === 0) {
+      logMeta('Meta CAPI error', {
+        ...summary,
+        error_code: result.error_code,
+        error_type: result.error_type
+      });
       return { ok: false, status: response.status };
     }
 
+    console.log('Meta CAPI success', summary);
     return { ok: true };
   } catch {
     logMeta('Meta CAPI error', { event_id: eventId, reason: 'request_failed' });
